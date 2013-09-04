@@ -20,15 +20,18 @@
 #endif
 
 #include "php.h"
+#include "string.h"
 #include "ext/standard/php_string.h"
 #include "ext/standard/php_var.h"
 #include "ext/standard/php_smart_str.h"
 #include "ext/standard/basic_functions.h"
 #include "ext/standard/php_incomplete_class.h"
+#include "ext/date/php_date.h"
 #include "php_amf.h"
 #include "php_memory_streams.h"
 #include "ext/standard/info.h"
 #include "stdlib.h"
+#include "zend_interfaces.h"
 
 /*  AMF enumeration {{{1*/
 
@@ -65,7 +68,7 @@ enum AMFStringTranslate { AMF_TO_UTF8, AMF_FROM_UTF8};
 
 /*  module Declarations {{{1*/
 
-static function_entry amf_functions[] = {
+static zend_function_entry amf_functions[] = {
     PHP_FE(amf_encode, NULL)
     PHP_FE(amf_decode, NULL)
     PHP_FE(amf_join_test, NULL)
@@ -88,7 +91,7 @@ static PHP_MINFO_FUNCTION(amf)
 	php_info_print_table_row(2, "Compiled Version", PHP_AMF_VERSION);
 	php_info_print_table_end();
 
-/* 	DISPLAY_INI_ENTRIES(); */
+ 	DISPLAY_INI_ENTRIES();
 }
 
 /*  resource StringBuilder */
@@ -131,9 +134,6 @@ zend_module_entry amf_module_entry = {
 #ifdef COMPILE_DL_AMF
 ZEND_GET_MODULE(amf)
 #endif
-
-
-
 
 /*  Memory Management {{{1*/
 
@@ -765,7 +765,6 @@ static int amf_cache_zval_typed(amf_serialize_data_t*var_hash, zval * val, ulong
 {
 	HashTable *cache = version == 0 ? &(var_hash->objects0) : &(var_hash->objects);
 	HashTable *obj;
-	
 	switch(Z_TYPE_P(val))
 	{
 	case IS_OBJECT: obj = Z_OBJPROP_P(val); break;
@@ -1171,8 +1170,7 @@ static void amf3_serialize_object_default(amf_serialize_output buf,HashTable* my
 }
 
 static int amf_perform_serialize_callback_event(int ievent, zval*arg0,zval** zResultValue, int shared, amf_serialize_data_t * var_hash TSRMLS_DC)
-{
-	
+{	
 	if(var_hash->callbackFx != NULL)
 	{
 		int r;  /*  result from functio */
@@ -2032,7 +2030,7 @@ static void amf3_serialize_array(amf_serialize_output buf, HashTable * myht, amf
 static void amf3_serialize_var(amf_serialize_output buf, zval **struc, amf_serialize_data_t *var_hash TSRMLS_DC)
 {
 	ulong objectIndex;
-	
+
 	switch (Z_TYPE_PP(struc)) {
 		case IS_BOOL: amf_write_byte(buf, Z_LVAL_PP(struc) != 0 ? AMF3_TRUE : AMF3_FALSE); return;
 		case IS_NULL: amf_write_byte(buf, AMF3_NULL); return;
@@ -2732,7 +2730,7 @@ static int amf0_read_string(zval **rval, const unsigned char **p, const unsigned
 			return SUCCESS;
 		}
 	}
-	ZVAL_STRINGL(*rval, (char*)src, slength, 1)
+	ZVAL_STRINGL(*rval, (char*)src, slength, 1);
 	return SUCCESS;
 }
 
@@ -2770,7 +2768,7 @@ static int amf3_read_string(zval **rval, const unsigned char **p, const unsigned
 		}
 		else
 		{
-			Z_DELREF_P(newval);
+			Z_DELREF_P(newval); 
 		}
 		*rval = newval;
 	}
@@ -2985,9 +2983,29 @@ static int amf3_unserialize_var(zval **rval, const unsigned char **p, const unsi
 		handle = amf3_read_integer(p,max,var_hash);
 		if((handle & AMF_INLINE_ENTITY) != 0)
 		{
-			double d = amf_read_double(p,max,var_hash);
-			ZVAL_DOUBLE(*rval,d)
-			 /* zval_add_ref(rval) */
+			long timestamp = (long)amf_read_double(p,max,var_hash)/1000;
+
+			zend_class_entry *datetime_ce = php_date_get_date_ce();
+			php_date_instantiate(datetime_ce, *rval TSRMLS_CC);
+			// So, we have to instantiate an empty DateTime-object because if you pass it a UNIX-timestamp,
+			// the timezone is not set to the local timezone, but to UTC instead.
+			if(!php_date_initialize(zend_object_store_get_object(*rval TSRMLS_CC), NULL, 0, NULL, NULL, 0 TSRMLS_CC)) {
+				php_error_docref(NULL TSRMLS_CC, E_WARNING, "amf cannot parse date %d", timestamp);
+				return FAILURE;
+			}
+			// The result of that weirdness is that we have to do this very convulted sequence!
+			// I'm not very good at C or PHP C, though. So I might've missed a very easy way to do this.
+			php_date_obj *temp_obj = zend_object_store_get_object(*rval TSRMLS_CC);
+			timelib_tzinfo *tzi;
+			timelib_time *ts;
+
+			tzi = get_timezone_info(TSRMLS_C);
+			ts = timelib_time_ctor();
+			ts->tz_info = tzi;
+			ts->zone_type = TIMELIB_ZONETYPE_ID;
+			timelib_unixtime2local(ts, (timelib_sll)timestamp);
+			temp_obj->time = ts;
+
 			amf_put_in_cache(&(var_hash->objects),*rval);
 		}
 		else
@@ -3096,7 +3114,7 @@ static int amf3_unserialize_var(zval **rval, const unsigned char **p, const unsi
 			int bTypedObject;
 			int iDynamicObject;
 			int iExternalizable;
-			zval * zClassDef,*zClassname = NULL;
+			zval *zClassDef,*zClassname = NULL;
 			int iMember;
 			int bIsArray = 0;
 			int iSuccess = FAILURE;
